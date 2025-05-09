@@ -4,3 +4,6 @@
 /Lib
 /Scripts
 /Include
+dataset.csv
+model.pkl
+network_traffic.db
