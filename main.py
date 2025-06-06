@@ -9,6 +9,8 @@ import joblib
 import os
 import pandas as pd
 
+from collections import deque
+
 
 warnings.filterwarnings("ignore")
 
@@ -21,6 +23,8 @@ class TrafficSniffer:
         model_path="model.pkl",
         prediction_interval=5,
     ):
+        self.override_confidence = None
+        self.override_label = None
         self.interface = interface
         self.flows = {}
         self.flow_timeout = 120  # seconds
@@ -34,6 +38,9 @@ class TrafficSniffer:
         self.model = None
         self.scaler = None
         self.label_encoder = None
+
+        self.recent_bytes_per_sec = deque(maxlen=20)  
+        self.bytes_threshold_multiplier = 3.0  
 
         # Load model if exists
         if model_path and os.path.exists(model_path):
@@ -56,38 +63,36 @@ class TrafficSniffer:
         except Exception as e:
             print(f"Error loading model: {e}")
 
-    # Add this to your TrafficSniffer class to create a function that exports data for Grafana
+    # def export_for_grafana(
+    #     self, db_file="network_traffic.db", csv_file="grafana_export.csv"
+    # ):
+    #     """Export data in a Grafana-friendly format"""
+    #     with sqlite3.connect(db_file) as conn:
+    #         df = pd.read_sql(
+    #             """
+    #             SELECT
+    #                 timestamp,
+    #                 flow_key,
+    #                 label as prediction,
+    #                 prediction_confidence,
+    #                 flow_bytes_s as bytes_per_sec,
+    #                 flow_packets_s as packets_per_sec,
+    #                 duration,
+    #                 fwd_packets,
+    #                 bwd_packets,
+    #                 init_fwd_win,
+    #                 init_bwd_win
+    #             FROM flow_stats
+    #             ORDER BY timestamp DESC
+    #             LIMIT 10000
+    #         """,
+    #             conn,
+    #         )
 
-    def export_for_grafana(
-        self, db_file="network_traffic.db", csv_file="grafana_export.csv"
-    ):
-        """Export data in a Grafana-friendly format"""
-        with sqlite3.connect(db_file) as conn:
-            df = pd.read_sql(
-                """
-                SELECT 
-                    timestamp,
-                    flow_key,
-                    label as prediction,
-                    prediction_confidence,
-                    flow_bytes_s as bytes_per_sec,
-                    flow_packets_s as packets_per_sec,
-                    duration,
-                    fwd_packets,
-                    bwd_packets,
-                    init_fwd_win,
-                    init_bwd_win
-                FROM flow_stats
-                ORDER BY timestamp DESC
-                LIMIT 10000
-            """,
-                conn,
-            )
-
-        # Convert timestamp to Grafana's preferred format
-        df["timestamp"] = pd.to_datetime(df["timestamp"]).astype("int64") // 10**6
-        df.to_csv(csv_file, index=False)
-        print(f"Data exported to {csv_file} for Grafana")
+    #     # Convert timestamp to Grafana's preferred format
+    #     df["timestamp"] = pd.to_datetime(df["timestamp"]).astype("int64") // 10**6
+    #     df.to_csv(csv_file, index=False)
+    #     print(f"Data exported to {csv_file} for Grafana")
 
     def _init_db(self):
         """Initialize the SQLite database"""
@@ -246,9 +251,12 @@ class TrafficSniffer:
             # Make prediction
             prediction_encoded = self.model.predict(features_scaled)[0]
             confidence = np.max(self.model.predict_proba(features_scaled))
-            prediction_label = self.label_encoder.inverse_transform(
-                [prediction_encoded]
-            )[0]
+            if confidence < 0.6:
+                prediction_label = "Benign"
+            elif confidence < 0.85:
+                prediction_label = "DoS Suspicious"
+            else:
+                prediction_label = "DoS"
 
             return prediction_label, prediction_encoded, confidence
 
@@ -297,6 +305,23 @@ class TrafficSniffer:
             flow_data["label_encoded"] = label_encoded
             flow_data["prediction_confidence"] = confidence
             self.last_prediction = time.time()
+           
+        # Compute override based on recent bytes/sec average
+        avg_recent_bps = (
+            np.mean(self.recent_bytes_per_sec) if self.recent_bytes_per_sec else 0
+        )
+
+        if (
+            avg_recent_bps > 0
+            and flow_data["flow_bytes_s"]
+            > self.bytes_threshold_multiplier * avg_recent_bps
+        ):
+            flow_data["label"] = "DoS Sudden Spike"
+            flow_data["prediction_confidence"] = 1.0  # fully confident
+            flow_data["label_encoded"] = -2  # special override
+
+        # Update deque after decision is made
+        self.recent_bytes_per_sec.append(flow_data["flow_bytes_s"])
 
         self._save_flow_to_db(flow_data)
         del self.flows[flow_key]
@@ -435,4 +460,3 @@ if __name__ == "__main__":
         prediction_interval=5,
     )
     sniffer.start_live_capture()
-
