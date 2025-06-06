@@ -20,14 +20,10 @@ def simulate_normal_traffic():
     while True:
         try:
             if count % 5 == 0:
-                # Every 5th request sends debug label + confidence
                 payload = random.choice(DEBUG_PAYLOADS)
-                print(
-                    f"Sending debug traffic with label={payload['label']} and confidence={payload['confidence']}"
-                )
+                print(f"Setting up Denial of Service (DoS) simulation ")
                 requests.get(TARGET_URL, params=payload)
             else:
-                print("Sending normal request")
                 requests.get(TARGET_URL)
 
         except Exception as e:
