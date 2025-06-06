@@ -47,7 +47,7 @@ col3.metric("Active Flows", df["flow_key"].nunique())
 
 # Threat Meter
 threat_label = df["label"].iloc[0] if not df.empty else "N/A"
-confidence = df["prediction_confidence"].iloc[0] if not df.empty else 0.0
+confidence =   df["prediction_confidence"].iloc[0] if not df.empty else 0.0
 
 threat_level = "🟢 Normal"
 if confidence > 0.9 and threat_label.lower() != "benign":
